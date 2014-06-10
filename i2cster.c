@@ -17,6 +17,18 @@ static const unsigned short normal_i2c[] = { 0x50, 0x51, 0x52, 0x53, 0x54,
 #define I2CSTER_EVLEN 10
 
 
+static void i2cster_kobj_release(struct kobject *kobj)
+{
+	pr_debug("kobject: (%p): %s\n", kobj, __func__);
+	kfree(kobj);
+}
+
+static struct kobj_type i2cster_kobj_ktype = {
+		.release        = i2cster_kobj_release,
+//		.sysfs_ops      = &kobj_sysfs_ops,
+};
+
+
 static ssize_t event_read(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
@@ -48,7 +60,7 @@ struct i2cster_event {
 //	long bytes_to_read;
 	long bytes_to_write;
 	struct list_head list;
-	struct kobject * kobj;
+	struct kobject kobj;
 	char * buf;
 };
 
@@ -62,40 +74,69 @@ struct i2cster_data {
 
 //DEVICE_ATTR();
 //FILE_ATTR();
+static ssize_t i2cster_write_bin(struct file *filp, struct kobject *kobj, struct bin_attribute *bin_attr,
+		char *buf, loff_t off, size_t count)
+{
+	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
+	struct i2c_client *client = to_i2c_client(container_of(kobj->parent, struct device, kobj));
+	struct i2cster_data * data = i2c_get_clientdata(client);
+
+	int i;
+	printk (KERN_ERR "Write bin - off: %d, size: %d\n", off, count);
+
+	if (off == 0 && count == tmp_event->bytes_to_write) {
+//		i2c_smbus_write_byte (client, tmp_event->reg);
+		for(i = 0; i < count; i++) {
+			i2c_smbus_write_byte_data(client, tmp_event->reg + i,  buf[i]);
+		}
+		/// @todo tutaj mutex unlock
+		return count;
+	} else if (count == 0) {
+		return count;
+	} else
+		return -EINVAL;
+
+}
 
 static ssize_t i2cster_read_bin(struct file *filp, struct kobject *kobj,
 			   struct bin_attribute *bin_attr,
 			   char *buf, loff_t off, size_t count)
 {
-//	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
-//	dev_err(dev, "Creating new event: %s (%s|%s) @%d\n", buf, tmp_reg,tmp_to_write, tmp_event);
-//	printk(KERN_ERR "kobj: %d\n", kobj);
 
-
-	struct i2c_client *client = to_i2c_client(container_of(kobj, struct i2cster_event, kobj));
+	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
+	struct i2c_client *client = to_i2c_client(container_of(kobj->parent, struct device, kobj));
 	struct i2cster_data * data = i2c_get_clientdata(client);
 	char tmp;
-	struct i2cster_event * tmp_event;
-	struct list_head *pos, *q;
-	struct i2cster_event * final_event = NULL;
+	int i;
 
+	printk (KERN_ERR "Read bin - off: %d, size: %d\n", off, count);
 
-	printk (KERN_ERR "i2cster_read_rw client(@%d) %d + %d\n", client, off, count);
-	// search for correct file
-//	list_for_each_safe(pos, q, &data->events_list){
-////		tmp_event = list_entry(pos, struct i2cster_event, list);
-////		if (strcmp(kobj->name, tmp_event->kobj->name) == 0) {
-////			final_event = tmp_event;
-////			break;
-////		}
-//	}
+	if (off == 0 && count == tmp_event->bytes_to_write) {
 
-	if (final_event == NULL)
-		return -EINVAL;
-
-
+//		/// @todo: tutaj mutex lock
+//		if (i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_READ_I2C_BLOCK)) {
+//			for (i = slice << 5; i < (slice + 1) << 5; i += 32)
+//				if (i2c_smbus_read_i2c_block_data(client, i,
+//						32, data->data + i)
+//						!= 32)
+//					goto exit;
+//		} else {
+//			for (i = 0; i < tmp_event.bytes_to_write; i++{
+//					char tmp_b = i2c_smbus_read_byte_data(client, )
+//			}
 //
-	return -EINVAL;
+//		}
+//		memset(buf, 'a', count);
+		i2c_smbus_write_byte (client, tmp_event->reg);
+		for(i = 0; i < count; i++) {
+			buf[i] = i2c_smbus_read_byte(client);
+		}
+		/// @todo tutaj mutex unlock
+		return count;
+	} else if (count == 0) {
+		return count;
+	} else
+		return -EINVAL;
 //	if (off > I2CSTER_MAX_SIZE/2)
 //		return 0;
 //	if (off + count > I2CSTER_MAX_SIZE/2)
@@ -109,9 +150,9 @@ static ssize_t i2cster_read_bin(struct file *filp, struct kobject *kobj,
 }
 
 static struct bin_attribute i2cster_bin_attr = {
-	.attr = { .name = "raw", .mode = S_IRUGO, },
+	.attr = { .name = "raw", .mode = S_IRUGO | S_IWUGO , },
 	.size = I2CSTER_MAX_SIZE, /* more or less standard */
-//	.write = i2cster_write_raw,
+	.write = i2cster_write_bin,
 	.read = i2cster_read_bin,
 };
 
@@ -128,12 +169,12 @@ static ssize_t set_create_event(struct device *dev,
 {
 	struct i2cster_event * tmp_event;
 //	struct gpio_desc *desc;
-	int	status, status2, status3;
+	int	status, status2;
 
 
 	char *tmp_reg;
 	char *tmp_to_write;
-	char *tmp_to_read;
+//	char *tmp_to_read;
 
 	struct i2c_client *client = to_i2c_client(dev);
 	struct i2cster_data * data = i2c_get_clientdata(client);
@@ -175,16 +216,22 @@ static ssize_t set_create_event(struct device *dev,
 		goto end_remove_tmp_event;
 	}
 
-	dev_err(dev, "Creating new client(@%d) event: %s (%d|%d) @%d\n", client, buf, tmp_event->reg,tmp_event->bytes_to_write, tmp_event);
+   dev_err(dev, "Creating new event: client(%d), tmp_event(%d), kobject(%d)",
+		   client,
+		   tmp_event,
+		   &tmp_event->kobj);
 
-	tmp_event->kobj = kobject_create_and_add(buf, &dev->kobj);
-	if (tmp_event->kobj == NULL) {
-		status = -ENOMEM;
-		goto end_remove_tmp_event;
-	}
+
+	kobject_init_and_add(&tmp_event->kobj, &i2cster_kobj_ktype, &dev->kobj, buf);
+//   kobject_init(&tmp_event->kobj);
+//	tmp_event->kobj = kobject_create_and_add(buf, &dev->kobj);
+//	if (tmp_event->kobj == NULL) {
+//		status = -ENOMEM;
+//		goto end_remove_tmp_event;
+//	}
 
 	i2cster_bin_attr.size = tmp_event->bytes_to_write;
-	status = sysfs_create_bin_file(tmp_event->kobj, &i2cster_bin_attr);
+	status = sysfs_create_bin_file(&tmp_event->kobj, &i2cster_bin_attr);
 
 //	status = sysfs_create_group(tmp_event->kobj, &i2cster_event_group);
 
@@ -207,7 +254,7 @@ static ssize_t set_create_event(struct device *dev,
 	return size;
 
 end_remove_kobject:
-	kobject_put(tmp_event->kobj);
+	kobject_put(&tmp_event->kobj);
 end_remove_tmp_event:
 	kzfree(tmp_event);
 	return status;
@@ -231,11 +278,11 @@ static ssize_t set_remove_event(struct device *dev,
 
     list_for_each_safe(pos, q, &data->events_list){
              tmp=list_entry(pos, struct i2cster_event, list);
-             if (strcmp(tmp_buf, tmp->kobj->name) == 0) {
+             if (strcmp(tmp_buf, tmp->kobj.name) == 0) {
             	 list_del(pos);
 //            	 sysfs_remove_group(tmp->kobj, &i2cster_event_group);
-            	 sysfs_remove_bin_file(tmp->kobj, &i2cster_bin_attr);
-            	 kobject_put(tmp->kobj);
+            	 sysfs_remove_bin_file(&tmp->kobj, &i2cster_bin_attr);
+            	 kobject_put(&tmp->kobj);
             	 kzfree(tmp);
             	 break;
              }
@@ -345,9 +392,9 @@ static int i2cster_remove(struct i2c_client *client)
     list_for_each_safe(pos, q, &data->events_list){
              tmp=list_entry(pos, struct i2cster_event, list);
              list_del(pos);
-             sysfs_remove_group(tmp->kobj, &i2cster_event_group);
+             sysfs_remove_group(&tmp->kobj, &i2cster_event_group);
 
-             kobject_put(tmp->kobj);
+             kobject_put(&tmp->kobj);
              kzfree(tmp);
     }
 
@@ -392,5 +439,5 @@ static struct i2c_driver i2cster_driver = {
 module_i2c_driver(i2cster_driver);
 
 MODULE_AUTHOR("Piotr Miedzik <qermit@sezamkowa.net>");
-MODULE_DESCRIPTION("I2C Ster Driver");
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("I2C Ster Driver");
