@@ -16,44 +16,6 @@ static const unsigned short normal_i2c[] = { 0x50, 0x51, 0x52, 0x53, 0x54,
 #define I2CSTER_MAX_SIZE 512
 #define I2CSTER_EVLEN 10
 
-
-static void i2cster_kobj_release(struct kobject *kobj)
-{
-	pr_debug("kobject: (%p): %s\n", kobj, __func__);
-	kfree(kobj);
-}
-
-static struct kobj_type i2cster_kobj_ktype = {
-		.release        = i2cster_kobj_release,
-//		.sysfs_ops      = &kobj_sysfs_ops,
-};
-
-
-static ssize_t event_read(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
-{
-	return -1;
-}
-
-static ssize_t event_write(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
-{
-	return -1;
-}
-
-DEVICE_ATTR(read, S_IRUSR, event_read, NULL);
-DEVICE_ATTR(write, S_IWUSR, NULL, event_write);
-
-static struct attribute *i2cster_event_attributes[] = {
-	&dev_attr_read.attr,
-	&dev_attr_write.attr,
-	NULL
-};
-
-static const struct attribute_group i2cster_event_group = {
-	.attrs = i2cster_event_attributes,
-};
-
 struct i2cster_event {
 //	char name[I2CSTER_EVLEN];
 	long reg;
@@ -62,6 +24,170 @@ struct i2cster_event {
 	struct list_head list;
 	struct kobject kobj;
 	char * buf;
+};
+
+
+struct i2cster_attribute {
+         struct attribute attr;
+         ssize_t (*show)(struct kobject *kobj, struct foo_attribute *attr, char *buf);
+         ssize_t (*store)(struct kobject *kobj, struct foo_attribute *attr, const char *buf, size_t count);
+};
+
+static void i2cster_kobj_release(struct kobject *kobj)
+{
+	pr_debug("kobject: (%p): %s\n", kobj, __func__);
+	kfree(kobj);
+}
+
+#define to_i2cster_attr(x) container_of(x, struct i2cster_attribute, attr)
+
+ static ssize_t i2cster_attr_show(struct kobject *kobj,
+                              struct attribute *attr,
+                              char *buf)
+ {
+         struct i2cster_attribute *attribute;
+         attribute = to_i2cster_attr(attr);
+         if (!attribute->show)
+                 return -EIO;
+         return attribute->show(kobj, attribute, buf);
+ }
+
+ /*
+  * Just like the default show function above, but this one is for when the
+  * sysfs "store" is requested (when a value is written to a file.)
+  */
+ static ssize_t i2cster_attr_store(struct kobject *kobj,
+                               struct attribute *attr,
+                               const char *buf, size_t len)
+ {
+         struct i2cster_attribute *attribute;
+         attribute = to_i2cster_attr(attr);
+         if (!attribute->store)
+                 return -EIO;
+         return attribute->store(kobj, attribute, buf, len);
+}
+
+
+static const struct sysfs_ops i2cster_sysfs_ops = {
+          .show = i2cster_attr_show,
+          .store = i2cster_attr_store,
+ };
+
+static struct kobj_type i2cster_kobj_ktype = {
+		.release        = i2cster_kobj_release,
+		.sysfs_ops      = &i2cster_sysfs_ops,
+};
+
+
+static ssize_t event_get_offset(struct kobject *kobj,  struct attribute *attr, char *buf)
+{
+	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
+
+	ssize_t status;
+
+	status = sprintf(buf, "%d\n", tmp_event->reg);
+	return status;
+
+
+}
+
+static ssize_t event_get_size(struct kobject *kobj,  struct attribute *attr, char *buf)
+{
+	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
+
+	ssize_t status;
+
+	status = sprintf(buf, "%d\n", tmp_event->bytes_to_write);
+	return status;
+}
+
+//static ssize_t event_read(struct device *dev,
+//		struct device_attribute *attr, const char *buf, size_t size)
+//{
+//	return -1;
+//}
+//
+//static ssize_t event_write(struct device *dev,
+//		struct device_attribute *attr, const char *buf, size_t size)
+//{
+//	return -1;
+//}
+
+//DEVICE_ATTR(offset, S_IRUSR, event_get_offset, NULL);
+//DEVICE_ATTR(size, S_IRUSR, event_get_size, NULL);
+//DEVICE_ATTR(read, S_IRUSR, event_read, NULL);
+//DEVICE_ATTR(write, S_IWUSR, NULL, event_write);
+static struct i2cster_attribute i2cster_attr_offset =
+	__ATTR(offset,S_IRUSR | S_IRGRP, event_get_offset, NULL );
+
+static struct i2cster_attribute i2cster_attr_size =
+	__ATTR(size,S_IRUSR | S_IRGRP, event_get_offset, NULL );
+
+
+static ssize_t i2cster_read_hex(struct kobject *kobj,  struct attribute *attr, char *buf)
+{
+
+	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
+	struct i2c_client *client = to_i2c_client(container_of(kobj->parent, struct device, kobj));
+	struct i2cster_data * data = i2c_get_clientdata(client);
+	char tmp;
+	int i;
+	int count = tmp_event->bytes_to_write *2;
+
+	printk (KERN_ERR "Read hex - off: %d, size: %d\n", 0 , tmp_event->bytes_to_write);
+
+	i2c_smbus_write_byte (client, tmp_event->reg);
+	for(i = 0; i < count; i=i+2) {
+			tmp = i2c_smbus_read_byte(client);
+			sprintf(&buf[i],"%02X", tmp);
+	}
+
+	return count;
+}
+
+static ssize_t i2cster_write_hex(struct kobject *kobj,  struct attribute *attr, const char *buf, size_t count)
+{
+
+	struct i2cster_event * tmp_event = container_of(kobj, struct i2cster_event, kobj);
+	struct i2c_client *client = to_i2c_client(container_of(kobj->parent, struct device, kobj));
+	struct i2cster_data * data = i2c_get_clientdata(client);
+
+	int status;
+	char tmp;
+	char tmp2[3];
+	int i;
+
+//	char *tmp_buf =  strim((char *)buf);
+
+
+    tmp2[2] = 0;
+//	i2c_smbus_write_byte_data (client, tmp_event->reg);
+	for(i = 0; i < count; i=i+2) {
+		tmp2[0] = buf[i];
+		tmp2[1] = buf[i+1];
+		status = kstrtouint(tmp2, 16, &tmp);
+		if (status == 0)
+			tmp = i2c_smbus_write_byte_data(client, i/2, tmp);
+		else
+			return status;
+	}
+
+	return count;
+}
+
+
+
+static struct i2cster_attribute i2cster_attr_hex =
+	__ATTR(hex,S_IRUSR | S_IRGRP | S_IWUSR, i2cster_read_hex, i2cster_write_hex );
+
+
+static struct attribute *i2cster_event_attributes[] = {
+		&i2cster_attr_offset.attr,
+		&i2cster_attr_size.attr,
+		&i2cster_attr_hex.attr,
+//		&dev_attr_read.attr,
+//		&dev_attr_write.attr,
+		NULL
 };
 
 struct i2cster_data {
@@ -137,24 +263,29 @@ static ssize_t i2cster_read_bin(struct file *filp, struct kobject *kobj,
 		return count;
 	} else
 		return -EINVAL;
-//	if (off > I2CSTER_MAX_SIZE/2)
-//		return 0;
-//	if (off + count > I2CSTER_MAX_SIZE/2)
-//		count = I2CSTER_MAX_SIZE/2 - off;
-//
-//	tmp = data->val[0];
-//	data->val[0] = tmp+1;
-////	memset(data->val, tmp+1, I2CSTER_MAX_SIZE*sizeof(char));
-//	memset(buf, tmp, count);
-//	return count;
 }
 
+
 static struct bin_attribute i2cster_bin_attr = {
-	.attr = { .name = "raw", .mode = S_IRUGO | S_IWUGO , },
+	.attr = { .name = "bin", .mode = S_IRUGO | S_IWUGO , },
 	.size = I2CSTER_MAX_SIZE, /* more or less standard */
 	.write = i2cster_write_bin,
 	.read = i2cster_read_bin,
 };
+
+//BIN_ATTR(offset,  S_IRUSR | S_IRGRP, event_get_offset, NULL, 1024);
+//BIN_ATTR(size,  S_IRUSR | S_IRGRP, event_get_size, NULL, 1024);
+static struct bin_attribute *i2cster_event_bin_attrs [] = {
+//		&bin_attr_offset.attr,
+//		&bin_attr_size.attr,
+		NULL
+};
+
+static const struct attribute_group i2cster_event_group = {
+	.attrs = i2cster_event_attributes,
+	.bin_attrs = i2cster_event_bin_attrs,
+};
+
 
 //static struct bin_attribute i2cster_bin_attr = {
 //	.attr = { .name = "raw", .mode = S_IRUGO, },
@@ -233,11 +364,18 @@ static ssize_t set_create_event(struct device *dev,
 	i2cster_bin_attr.size = tmp_event->bytes_to_write;
 	status = sysfs_create_bin_file(&tmp_event->kobj, &i2cster_bin_attr);
 
-//	status = sysfs_create_group(tmp_event->kobj, &i2cster_event_group);
 
 	if (status) {
 		status = -ENOMEM;
 		goto end_remove_kobject;
+	}
+
+	status = sysfs_create_group(&tmp_event->kobj, &i2cster_event_group);
+
+	if (status) {
+		status = -ENOMEM;
+		goto end_remove_group;
+
 	}
 //	status = kobject_init(&tmp_event->kobj, )
 
@@ -252,6 +390,7 @@ static ssize_t set_create_event(struct device *dev,
 	mutex_unlock(&data->userspace_clients_lock);
 
 	return size;
+end_remove_group:
 
 end_remove_kobject:
 	kobject_put(&tmp_event->kobj);
@@ -280,7 +419,7 @@ static ssize_t set_remove_event(struct device *dev,
              tmp=list_entry(pos, struct i2cster_event, list);
              if (strcmp(tmp_buf, tmp->kobj.name) == 0) {
             	 list_del(pos);
-//            	 sysfs_remove_group(tmp->kobj, &i2cster_event_group);
+            	 sysfs_remove_group(&tmp->kobj, &i2cster_event_group);
             	 sysfs_remove_bin_file(&tmp->kobj, &i2cster_bin_attr);
             	 kobject_put(&tmp->kobj);
             	 kzfree(tmp);
